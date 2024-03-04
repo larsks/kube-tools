@@ -31,14 +31,12 @@ usage() {
 }
 
 cleanup() {
-	if [[ -v user ]]; then
-		if kubectl "${kubectl_args[@]}" get csr "${user}" >/dev/null 2>&1; then
-			LOG "delete csr from kubernetes"
-			kubectl "${kubectl_args[@]}" delete csr "${user}"
-		fi
-
-		[[ -v csr_file ]] && rm -f "$csr_file"
+	if kubectl "${kubectl_args[@]}" get csr "${user}" >/dev/null 2>&1; then
+		LOG "delete csr from kubernetes"
+		kubectl "${kubectl_args[@]}" delete csr "${user}"
 	fi
+
+	rm -f "$csr_file"
 }
 
 ARGS=$(getopt -o 'k:g:K:C:x:' --long 'expires:,key-file:,certificate-file:,key-size:,group:,as:,kubeconfig:,help' -n "${0##*/}" -- "$@") || exit 1
@@ -99,7 +97,6 @@ while :; do
 done
 
 set -eu
-trap "cleanup" EXIT
 
 (($#)) || {
 	usage >&2
@@ -108,9 +105,11 @@ trap "cleanup" EXIT
 [[ -z "$1" ]] && DIE "no username"
 user=$1
 
-: "${private_key_file:="${user}.key"}"
-crt_file="${user}.crt"
 csr_file=$(mktemp csrXXXXXX)
+: "${private_key_file:="${user}.key"}"
+: "${crt_file:="${user}.crt"}"
+
+trap "cleanup" EXIT
 
 if ! [[ -f $private_key_file ]]; then
 	openssl genpkey -out "$private_key_file" -algorithm RSA -pkeyopt rsa_keygen_bits:"$keybits" ||
