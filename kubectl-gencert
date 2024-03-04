@@ -1,0 +1,172 @@
+#!/bin/bash
+
+LOG() {
+	local myname=${0##*/}
+	local ts
+	ts=$(date -Iseconds)
+	echo "$myname $ts $*" >&2
+}
+
+DIE() {
+	LOG "ERROR: $*"
+	exit 1
+}
+
+usage() {
+	local myname=${0##*/}
+	cat <<-EOF
+		$myname: usage: $myname [options] username
+
+		Options:
+
+		--kubeconfig, -k <kubeconfig>
+		--as <user>
+		--context <context>
+
+		--output-directory, -d <path>
+		--expires, -x <expires>
+		--key-size <bits>
+		--groups, -g <groups>
+		--certificate-file, -C <certificate-file>
+		--key-file, -K <key-file>
+	EOF
+}
+
+cleanup() {
+	if kubectl "${kubectl_args[@]}" get csr "${user}" >/dev/null 2>&1; then
+		LOG "delete csr from kubernetes"
+		kubectl "${kubectl_args[@]}" delete csr "${user}"
+	fi
+}
+
+ARGS=$(getopt -o 'k:g:fK:C:R:x:d:' --long 'context:,force-csr,expires:,key-file:,csr-file:,crt-file:,key-size:,group:,as:,kubeconfig:,help,output-directory:' -n "${0##*/}" -- "$@") || exit 1
+eval set -- "$ARGS"
+unset ARGS
+
+groups=()
+keybits=4096
+expirationSeconds=$((86400 * 30))
+kubectl_args=()
+output_directory=.
+force_csr=0
+
+while :; do
+	case "$1" in
+	"--help")
+		usage
+		exit 0
+		;;
+	"--context")
+		kubectl_args+=("--context" "$2")
+		shift 2
+		;;
+	"-f" | "--force-csr")
+		force_csr=1
+		shift
+		;;
+	"-d" | "--output-directory")
+		output_directory="$2"
+		shift 2
+		;;
+	"-k" | "--kubeconfig")
+		kubectl_args+=("--kubeconfig" "$2")
+		shift 2
+		;;
+	"--as")
+		kubectl_args+=("--as" "$2")
+		shift 2
+		;;
+	"-g" | "--group")
+		readarray -t _groups < <(tr ',' '\n' <<<"$2")
+		groups+=("${_groups[@]}")
+		shift 2
+		;;
+	"-x" | "--expires")
+		expirationSeconds=$2
+		shift 2
+		;;
+	"--key-size")
+		keybits=$2
+		shift 2
+		;;
+	"-K" | "--key-file")
+		private_key_file=$2
+		shift 2
+		;;
+
+	"-R" | "--csr-file")
+		csr_file=$2
+		shift 2
+		;;
+
+	"-C" | "--crt-file")
+		crt_file=$2
+		shift 2
+		;;
+
+	"--")
+		shift
+		break
+		;;
+
+	*)
+		DIE "internal error"
+		;;
+	esac
+done
+
+set -eu
+
+(($#)) || {
+	usage >&2
+	exit 2
+}
+[[ -z "$1" ]] && DIE "no username"
+user=$1
+
+: "${private_key_file:="${output_directory}/${user}.key"}"
+: "${csr_file:="${output_directory}/${user}.csr"}"
+: "${crt_file:="${output_directory}/${user}.crt"}"
+
+trap "cleanup" EXIT
+
+if ! [[ -f $private_key_file ]]; then
+	openssl genpkey -out "$private_key_file" -algorithm RSA -pkeyopt rsa_keygen_bits:"$keybits" ||
+		DIE "failed to generate private key"
+fi
+
+if ! [[ -f $csr_file ]] || ((force_csr)); then
+	subj_groups=""
+	if ((${#groups[@]})); then
+		printf -v subj_groups "/O=%s" "${groups[@]}"
+	fi
+	csr_subject="/CN=${user}${subj_groups}"
+
+	LOG "create csr with subject $csr_subject"
+	openssl req -new -out "$csr_file" -key "$private_key_file" -keyform PEM -subj "$csr_subject" ||
+		DIE "failed to generate csr"
+fi
+
+LOG "push csr to kubernetes"
+kubectl "${kubectl_args[@]}" apply -f- <<EOF || DIE "failed to create csr resource in kubernetes"
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: ${user}
+spec:
+  request: $(base64 -w0 "$csr_file")
+  signerName: kubernetes.io/kube-apiserver-client
+  expirationSeconds: ${expirationSeconds}
+  usages:
+  - client auth
+EOF
+
+LOG "approve csr"
+kubectl "${kubectl_args[@]}" certificate approve "${user}" ||
+	DIE "failed to approve certificate"
+kubectl "${kubectl_args[@]}" wait --for condition=approved "csr/${user}" ||
+	DIE "timed out waiting for certificate approval"
+
+LOG "extract certificate"
+kubectl "${kubectl_args[@]}" get csr "${user}" -o jsonpath='{.status.certificate}' | base64 -d >"$crt_file" ||
+	DIE "failed to extract certificate"

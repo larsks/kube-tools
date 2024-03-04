@@ -1,0 +1,6 @@
+#!/bin/bash
+
+now=$(date -Iseconds)
+kubectl patch "$@" --type json --patch '[
+{"op": "add", "path": "/metadata/annotations/kubectl-refresh", "value": "'"$now-$RANDOM"'"}
+]'

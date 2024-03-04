@@ -1,0 +1,30 @@
+#!/bin/bash
+
+KUBECONFIG_DIR=${KUBECONFIG_DIR:-"$HOME/.kube/tmp"}
+
+if [[ -n "$KUBECONFIG_CONTEXT" ]]; then
+  echo "ERROR: you are already in a frozen context ($KUBECONFIG_CONTEXT)" >&2
+  exit 1
+fi
+
+mkdir -p "$KUBECONFIG_DIR"
+tmp_kubeconfig=$(mktemp "$KUBECONFIG_DIR/kubeconfigXXXXXX")
+trap 'rm -f $tmp_kubeconfig' EXIT
+
+ctx=$(kubectl config get-contexts -o name | fzf)
+
+[[ -z "$ctx" ]] && exit
+
+if ! kubectl --context "$ctx" config view --minify --flatten >"$tmp_kubeconfig"; then
+  echo "ERROR: failed to extract kubeconfig for $ctx" >&2
+  exit 1
+fi
+
+export KUBECONFIG=$tmp_kubeconfig
+export KUBECONFIG_CONTEXT="$ctx"
+
+if [[ -z "$*" ]]; then
+  bash
+else
+  "$@"
+fi

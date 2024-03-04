@@ -1,0 +1,54 @@
+#!/bin/bash
+
+show_groups=0
+show_help=0
+
+usage() {
+  echo "$0: Kubernetes Alternative Who-am-i (KAWAI)"
+  echo "$0: usage: kubectl kawai [-g] [...kubectl options...]"
+}
+
+kubectl_args=()
+while (($#)); do
+  case "$1" in
+  -g | --groups)
+    show_groups=1
+    shift
+    ;;
+  -h | --help)
+    show_help=1
+    shift
+    ;;
+  *)
+    kubectl_args+=("$1")
+    shift
+    ;;
+  esac
+done
+
+if ((show_help)); then
+  usage
+  exit
+fi
+
+tmpfile=$(mktemp "kubeXXXXXX")
+trap 'rm -f "$tmpfile"' EXIT
+
+kubectl "${kubectl_args[@]}" create --raw /apis/authentication.k8s.io/v1/selfsubjectreviews -f- >"$tmpfile" <<END_JSON
+{
+  "kind": "SelfSubjectReview",
+  "apiVersion": "authentication.k8s.io/v1",
+  "metadata": {
+    "name": "example"
+  },
+  "status": {
+    "userInfo": {}
+  }
+}
+END_JSON
+
+jq -r .status.userInfo.username "$tmpfile"
+
+if ((show_groups)); then
+  jq -r '.status.userInfo.groups[]' "$tmpfile"
+fi

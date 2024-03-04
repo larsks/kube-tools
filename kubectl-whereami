@@ -1,0 +1,7 @@
+#!/bin/sh
+
+user=$(oc whoami)
+server=$(oc whoami --show-server)
+namespace=$(oc config view --minify -o jsonpath='{.contexts[*].context.namespace}')
+
+echo "You are ${user:-not logged in} on $server in $namespace"
