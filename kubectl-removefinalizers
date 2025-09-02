@@ -1,0 +1,4 @@
+#!/bin/bash
+
+kubectl get "$@" -o json |
+  jq '.items[].metadata.finalizers = null'
